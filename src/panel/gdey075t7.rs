@@ -7,6 +7,13 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiBus;
 
+pub trait ResetSleepHold: OutputPin {
+    fn release_sleep_hold(&mut self) {}
+    fn hold_low_for_sleep(&mut self) {}
+}
+
+impl ResetSleepHold for esp_hal::gpio::Output<'_> {}
+
 /// Pack one bit-plane of UC8179's 4-gray frame format. UC8179 ingests
 /// 4-level grayscale as two 1bpp planes uploaded sequentially (cmd
 /// `0x10` for the high bit, `0x13` for the low bit of each pixel's
@@ -173,7 +180,7 @@ where
     CS: OutputPin,
     BUSY: InputPin + Wait,
     DC: OutputPin,
-    RST: OutputPin,
+    RST: ResetSleepHold,
 {
     SPIError(SPI::Error),
     CSError(CS::Error),
@@ -188,7 +195,7 @@ where
     CS: OutputPin,
     BUSY: InputPin + Wait,
     DC: OutputPin,
-    RST: OutputPin,
+    RST: ResetSleepHold,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -240,7 +247,7 @@ where
     CS: OutputPin,
     BUSY: InputPin + Wait,
     DC: OutputPin,
-    RST: OutputPin,
+    RST: ResetSleepHold,
 {
     async fn command(
         &mut self,
@@ -268,7 +275,7 @@ where
     CS: OutputPin,
     BUSY: InputPin + Wait,
     DC: OutputPin,
-    RST: OutputPin,
+    RST: ResetSleepHold,
 {
     type Color = Gray2;
     type Error = Gdey075t7Error<SPI, CS, BUSY, DC, RST>;
@@ -312,10 +319,12 @@ where
         // SCREEN_RST#. Holding reset low after the refresh drops that
         // rail and fixes the ~90 µA E1001 deep-sleep excess.
         self.rst.set_low().map_err(Gdey075t7Error::RSTError)?;
+        self.rst.hold_low_for_sleep();
         Ok(())
     }
 
     async fn reset(&mut self) -> Result<(), Self::Error> {
+        self.rst.release_sleep_hold();
         self.rst.set_high().map_err(Gdey075t7Error::RSTError)?;
         Timer::after(Duration::from_millis(10)).await;
         self.rst.set_low().map_err(Gdey075t7Error::RSTError)?;

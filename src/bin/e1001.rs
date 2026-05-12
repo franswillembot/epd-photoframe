@@ -7,10 +7,12 @@
 )]
 
 use embassy_executor::Spawner;
+use embedded_hal::digital::{ErrorType, OutputPin as EmbeddedOutputPin};
 use esp_hal::clock::CpuClock;
 
-use esp_hal::gpio::{Input, InputConfig, Pin, Pull};
+use esp_hal::gpio::{Input, InputConfig, Pin, Pull, RtcPin};
 use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::peripherals::GPIO12;
 
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::spi::master::Config as SpiConfig;
@@ -20,7 +22,49 @@ use esp_hal::uart::{Config as UartConfig, UartRx};
 extern crate alloc;
 
 use epd_photoframe::app::{AppHardware, init_runtime, run_app};
-use epd_photoframe::panel::gdey075t7::Gdey075t7;
+use epd_photoframe::panel::gdey075t7::{Gdey075t7, ResetSleepHold};
+
+struct HeldRtcResetPin {
+    output: Output<'static>,
+    hold: GPIO12<'static>,
+}
+
+impl HeldRtcResetPin {
+    fn new(pin: GPIO12<'static>) -> Self {
+        let output = Output::new(pin, Level::Low, OutputConfig::default());
+        // The Output owns GPIO12 for normal runtime driving. This second
+        // handle is only used to toggle RTC pad hold on the same pad before
+        // entering ESP deep sleep and after waking.
+        let hold = unsafe { GPIO12::steal() };
+        Self { output, hold }
+    }
+}
+
+impl ErrorType for HeldRtcResetPin {
+    type Error = core::convert::Infallible;
+}
+
+impl EmbeddedOutputPin for HeldRtcResetPin {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.output.set_low();
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.output.set_high();
+        Ok(())
+    }
+}
+
+impl ResetSleepHold for HeldRtcResetPin {
+    fn release_sleep_hold(&mut self) {
+        self.hold.rtcio_pad_hold(false);
+    }
+
+    fn hold_low_for_sleep(&mut self) {
+        self.hold.rtcio_pad_hold(true);
+    }
+}
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -76,7 +120,7 @@ async fn main(spawner: Spawner) -> ! {
             InputConfig::default().with_pull(Pull::Up),
         ),
         Output::new(peripherals.GPIO11, Level::Low, OutputConfig::default()),
-        Output::new(peripherals.GPIO12, Level::Low, OutputConfig::default()),
+        HeldRtcResetPin::new(peripherals.GPIO12),
     );
 
     // One task later drives both per-wake sensor reads (battery ADC +
